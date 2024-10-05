@@ -20,7 +20,6 @@ LIGHT_BLUE = (0, 200, 255)
 
 pygame.init()
 
-
 class Man:
     """Class representing the player character."""
 
