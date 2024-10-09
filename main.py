@@ -7,7 +7,7 @@ import os
 WIDTH, HEIGHT = 1000, 1000
 GRID_SIZE = 100
 TILE_SIZE = WIDTH // GRID_SIZE
-FPS = 60
+FPS = 2
 
 # Colors
 WHITE = (255, 255, 255)
@@ -27,10 +27,11 @@ class Man:
         self.y = y
         self.last_ate = 0
         self.last_drank = 0
-        self.health = 100
-        self.stamina = 100
+        self.health = 200
+        self.stamina = 200
         self.inventory = {"wood": 0, "stone": 0, "berries": 0}
         self.weapon = None
+        self.current_task = None  # New attribute to track the current task
 
     def is_hungry(self, current_time):
         return current_time - self.last_ate > 30
@@ -39,11 +40,11 @@ class Man:
         return current_time - self.last_drank > 25
 
     def get_hunger_level(self, current_time):
-        return self._get_resource_level(current_time - self.last_ate, 100.0)
+        return self._get_resource_level(current_time - self.last_ate, 200.0)
 
     def get_thirst_level(self, current_time):
-        return self._get_resource_level(current_time - self.last_drank, 80.0)
-
+        return self._get_resource_level(current_time - self.last_drank, 200.0)
+    
     @staticmethod
     def _get_resource_level(duration, max_duration):
         return 1.0 - min(1.0, max(0.0, duration / max_duration))
@@ -97,8 +98,15 @@ class Environment:
         for _ in range(2):
             self.wolves.append(Wolf(random.randint(0, GRID_SIZE-1), random.randint(0, GRID_SIZE-1)))
 
-    def find_closest(self, entity, items):
-        return min(items, key=lambda item: (item[0] - entity.x) ** 2 + (item[1] - entity.y) ** 2, default=None)
+    def find_closest(self, origin, items):
+        if not items:
+            return None
+        # Convert set to list if it's a set
+        items_list = list(items) if isinstance(items, set) else items
+        if isinstance(items_list[0], Wolf):
+            return min(items_list, key=lambda item: (item.x - origin.x) ** 2 + (item.y - origin.y) ** 2)
+        else:
+            return min(items_list, key=lambda item: (item[0] - origin.x) ** 2 + (item[1] - origin.y) ** 2)
 
     def check_step(self, man, current_time):
         pos = (man.x, man.y)
@@ -172,7 +180,7 @@ class Menu:
         
         return craft_axe_button, craft_sword_button, back_button
 
-    def in_game_menu(self, inventory):
+    def in_game_menu(self, inventory, current_task):
         menu_width, menu_height = WIDTH - 200, HEIGHT // 2
         menu_x, menu_y = (WIDTH - menu_width) - 100, (HEIGHT - menu_height) // 2
         menu_surface = pygame.Surface((menu_width, menu_height))
@@ -187,8 +195,18 @@ class Menu:
         save_button = pygame.Rect(20, menu_height - 70, 160, 50)
         self.draw_button("Save Game", save_button, GREEN, BLACK)
         
+        # Add task buttons
+        tasks = ["None", "Mining", "Woodcutting", "Foraging", "Hunting"]
+        button_width, button_height = 120, 40
+        buttons = []
+        for i, task in enumerate(tasks):
+            button = pygame.Rect(200 + (i % 3) * (button_width + 10), 20 + (i // 3) * (button_height + 10), button_width, button_height)
+            color = LIGHT_BLUE if task == current_task else GRAY
+            self.draw_button(task, button, color, BLACK)
+            buttons.append((task, button))
+        
         self.screen.blit(menu_surface, (menu_x, menu_y))
-        return pygame.Rect(menu_x + 20, menu_y + menu_height - 70, 160, 50)
+        return pygame.Rect(menu_x + 20, menu_y + menu_height - 70, 160, 50), buttons
 
     def death_screen(self):
         self.screen.fill(WHITE)
@@ -260,7 +278,7 @@ class Game:
     def _draw_ground(self):
         for i in range(GRID_SIZE):
             for j in range(GRID_SIZE):
-                color = (0, random.randint(200, 255), 0)
+                color = (0, random.randint(250, 255), 0)
                 pygame.draw.rect(self.screen, color, (i * TILE_SIZE, j * TILE_SIZE, TILE_SIZE, TILE_SIZE))
 
     def _draw_trees(self):
@@ -321,9 +339,12 @@ class Game:
             elif craft_sword_button.collidepoint(mouse_pos):
                 self.craft_item("sword")
         elif self.state == GameState.IN_GAME_MENU:
-            save_button = self.menu.in_game_menu(self.man.inventory)
+            save_button, task_buttons = self.menu.in_game_menu(self.man.inventory, self.man.current_task)
             if save_button.collidepoint(mouse_pos):
                 self.save_game()
+            for task, button in task_buttons:
+                if button.collidepoint(mouse_pos):
+                    self.man.current_task = task if task != "None" else None
         elif self.state == GameState.DEATH_SCREEN:
             main_menu_button = self.menu.death_screen()
             if main_menu_button.collidepoint(mouse_pos):
@@ -357,7 +378,7 @@ class Game:
             if water:
                 self.man.move_to_spot(water)
         else:
-            self._wander(self.man)
+            self._perform_task()
 
         for wolf in self.environment.wolves:
             if abs(wolf.x - self.man.x) <= 1 and abs(wolf.y - self.man.y) <= 1:
@@ -368,9 +389,7 @@ class Game:
                 wolf.move_to_spot((self.man.x, self.man.y))
 
         self.environment.check_step(self.man, self.time)
-        self.environment.respawn_berries(self.time)  # New: Call respawn_berries method
-
-        self.environment.check_step(self.man, self.time)
+        self.environment.respawn_berries(self.time)
 
         if self._check_death():
             self.state = GameState.DEATH_SCREEN
@@ -380,10 +399,33 @@ class Game:
             self.day += 1
         self.clock.tick(FPS)
 
-        self.time += 1
-        if self.time % (24 * 60) == 0:
-            self.day += 1
-        self.clock.tick(FPS)
+    def _perform_task(self):
+        if self.man.current_task == "Mining":
+            stone = self.environment.find_closest(self.man, self.environment.stones)
+            if stone:
+                self.man.move_to_spot(stone)
+            else:
+                self._wander(self.man)
+        elif self.man.current_task == "Woodcutting":
+            tree = self.environment.find_closest(self.man, self.environment.trees)
+            if tree:
+                self.man.move_to_spot(tree)
+            else:
+                self._wander(self.man)
+        elif self.man.current_task == "Foraging":
+            berry = self.environment.find_closest(self.man, self.environment.berries)
+            if berry:
+                self.man.move_to_spot(berry)
+            else:
+                self._wander(self.man)
+        elif self.man.current_task == "Hunting":
+            wolf = self.environment.find_closest(self.man, self.environment.wolves)
+            if wolf:
+                self.man.move_to_spot((wolf.x, wolf.y))
+            else:
+                self._wander(self.man)
+        else:
+            self._wander(self.man)
 
     def _wander(self, entity):
         directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
@@ -406,7 +448,8 @@ class Game:
                 "health": self.man.health,
                 "stamina": self.man.stamina,
                 "inventory": self.man.inventory,
-                "weapon": self.man.weapon
+                "weapon": self.man.weapon,
+                "current_task": self.man.current_task
             },
             "time": self.time,
             "day": self.day,
@@ -427,6 +470,7 @@ class Game:
             self.man.stamina = game_state["man"]["stamina"]
             self.man.inventory = game_state["man"]["inventory"]
             self.man.weapon = game_state["man"]["weapon"]
+            self.man.current_task = game_state["man"]["current_task"]
             
             self.time = game_state["time"]
             self.day = game_state["day"]
@@ -443,7 +487,7 @@ class Game:
             elif self.state == GameState.UPGRADE_MENU:
                 self.menu.upgrade_menu(self.man.inventory["wood"], self.man.inventory["stone"])
             elif self.state == GameState.IN_GAME_MENU:
-                self.menu.in_game_menu(self.man.inventory)
+                self.menu.in_game_menu(self.man.inventory, self.man.current_task)
             elif self.state == GameState.IN_GAME:
                 self.update_game()
                 self.draw_game()
