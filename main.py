@@ -1,5 +1,6 @@
 import pygame
 import random
+import math
 
 # Constants
 WIDTH, HEIGHT = 1000, 1000
@@ -17,6 +18,7 @@ GREEN = (0, 255, 0)
 DARK_GREEN = (34, 139, 34)
 BROWN = (139, 69, 19)
 LIGHT_BLUE = (0, 200, 255)
+YELLOW = (255, 255, 0)
 
 pygame.init()
 
@@ -27,15 +29,23 @@ class Man:
         self.x = x
         self.y = y
         self.attack = 0
-        self.warmth = 0
+        self.warmth = 100
         self.wet = False
         self.last_wet = 0
         self.last_ate = 0
         self.last_drank = 0
+        self.inventory = {"wood": 0, "berries": 0, "water": 0}
+        self.health = 100
+        self.thirst = 100
+        self.energy = 100
 
     def is_hungry(self, current_time):
         """Check if the man is hungry based on time since last meal."""
         return current_time - self.last_ate > 30
+
+    def is_thirsty(self, current_time):
+        """Check if the man is thirsty based on time since last drink."""
+        return current_time - self.last_drank > 20
 
     def get_hunger_level(self, current_time):
         """Return hunger level as a float between 0 and 1."""
@@ -43,18 +53,38 @@ class Man:
         hunger_level = 1.0 - min(1.0, max(0.0, hunger_duration / 100.0))
         return hunger_level
 
+    def get_thirst_level(self, current_time):
+        """Return thirst level as a float between 0 and 1."""
+        thirst_duration = current_time - self.last_drank
+        thirst_level = 1.0 - min(1.0, max(0.0, thirst_duration / 80.0))
+        return thirst_level
+
     def move_to_spot(self, spot):
         """Move towards the given spot."""
-        if self.x < spot[0]:
-            self.x += 1
-        elif self.x > spot[0]:
-            self.x -= 1
+        dx = spot[0] - self.x
+        dy = spot[1] - self.y
+        distance = math.sqrt(dx**2 + dy**2)
+        
+        if distance > 0:
+            self.x += dx / distance
+            self.y += dy / distance
 
-        if self.y < spot[1]:
-            self.y += 1
-        elif self.y > spot[1]:
-            self.y -= 1
+        self.energy = max(0, self.energy - 0.1)
 
+    def collect_resource(self, resource_type):
+        """Collect a resource and add it to the inventory."""
+        self.inventory[resource_type] += 1
+
+    def consume(self, item_type):
+        """Consume an item from the inventory."""
+        if self.inventory[item_type] > 0:
+            self.inventory[item_type] -= 1
+            if item_type == "berries":
+                self.health = min(100, self.health + 10)
+                self.last_ate = pygame.time.get_ticks() // 1000
+            elif item_type == "water":
+                self.thirst = min(100, self.thirst + 20)
+                self.last_drank = pygame.time.get_ticks() // 1000
 
 class Environment:
     """Class representing the game environment."""
@@ -62,8 +92,10 @@ class Environment:
     def __init__(self):
         self.trees = []
         self.berries = []
+        self.water_sources = []
         self.create_tree_array()
         self.create_berry_array()
+        self.create_water_sources()
 
     def create_tree_array(self):
         """Initialize tree positions randomly on the grid."""
@@ -79,22 +111,34 @@ class Environment:
                 if (i, j) != (50, 50) and random.random() < 0.002:
                     self.berries.append((i, j))
 
-    def find_closest_food(self, man):
-        """Find the closest berry to the man."""
-        if not self.berries:
+    def create_water_sources(self):
+        """Initialize water sources randomly on the grid."""
+        for i in range(GRID_SIZE):
+            for j in range(GRID_SIZE):
+                if (i, j) != (50, 50) and random.random() < 0.001:
+                    self.water_sources.append((i, j))
+
+    def find_closest_resource(self, man, resource_type):
+        """Find the closest resource of a given type to the man."""
+        resources = getattr(self, resource_type)
+        if not resources:
             return None
-        closest_berry = min(
-            self.berries,
-            key=lambda b: (b[0] - man.x) ** 2 + (b[1] - man.y) ** 2
+        closest_resource = min(
+            resources,
+            key=lambda r: (r[0] - man.x) ** 2 + (r[1] - man.y) ** 2
         )
-        return closest_berry
+        return closest_resource
 
     def check_step(self, man, current_time):
-        """Check if the man is on a berry and handle eating."""
-        if (man.x, man.y) in self.berries:
-            man.last_ate = current_time
-            self.berries.remove((man.x, man.y))
-
+        """Check if the man is on a resource and handle collection."""
+        man_pos = (int(man.x), int(man.y))
+        if man_pos in self.berries:
+            man.collect_resource("berries")
+            self.berries.remove(man_pos)
+        elif man_pos in self.water_sources:
+            man.collect_resource("water")
+        elif man_pos in self.trees:
+            man.collect_resource("wood")
 
 class Menu:
     """Class to handle different menus in the game."""
@@ -103,7 +147,7 @@ class Menu:
         self.screen = screen
         self.font = pygame.font.Font(None, 36)
 
-    def open_in_game_menu(self):
+    def open_in_game_menu(self, man):
         """Render the in-game menu."""
         menu_width = WIDTH - 200
         menu_height = HEIGHT // 2
@@ -116,6 +160,16 @@ class Menu:
 
         # Draw a border around the menu
         pygame.draw.rect(menu_surface, BLACK, menu_surface.get_rect(), 2)
+
+        # Display inventory
+        inventory_text = f"Inventory: Wood: {man.inventory['wood']}, Berries: {man.inventory['berries']}, Water: {man.inventory['water']}"
+        text_surf = self.font.render(inventory_text, True, BLACK)
+        menu_surface.blit(text_surf, (20, 20))
+
+        # Display stats
+        stats_text = f"Health: {man.health}, Energy: {int(man.energy)}, Thirst: {int(man.thirst)}"
+        text_surf = self.font.render(stats_text, True, BLACK)
+        menu_surface.blit(text_surf, (20, 60))
 
         # Blit the menu surface onto the main screen
         self.screen.blit(menu_surface, (menu_x, menu_y))
@@ -202,53 +256,28 @@ class Game:
     def draw_ui(self):
         """Draw the user interface elements."""
         # Hunger Bar
-        hunger_bar_width = 150
-        hunger_bar_height = 20
-        hunger_bar_x = 10
-        hunger_bar_y = 10
+        self.draw_status_bar("Hunger", self.man.get_hunger_level(self.time), RED, 10, 10)
 
-        pygame.draw.rect(
-            self.screen,
-            GRAY,
-            (hunger_bar_x, hunger_bar_y, hunger_bar_width, hunger_bar_height)
-        )
+        # Thirst Bar
+        self.draw_status_bar("Thirst", self.man.get_thirst_level(self.time), BLUE, 10, 40)
 
-        hunger_level = self.man.get_hunger_level(self.time)
-        pygame.draw.rect(
-            self.screen,
-            RED,
-            (
-                hunger_bar_x,
-                hunger_bar_y,
-                int(hunger_bar_width * hunger_level),
-                hunger_bar_height
-            )
-        )
+        # Energy Bar
+        self.draw_status_bar("Energy", self.man.energy / 100, YELLOW, 10, 70)
 
-        # Thirst Bar (Placeholder, as thirst_level is currently fixed)
-        thirst_bar_width = 150
-        thirst_bar_height = 20
-        thirst_bar_x = 10
-        thirst_bar_y = hunger_bar_y + hunger_bar_height + 5
+        # Health Bar
+        self.draw_status_bar("Health", self.man.health / 100, GREEN, 10, 100)
 
-        pygame.draw.rect(
-            self.screen,
-            GRAY,
-            (thirst_bar_x, thirst_bar_y, thirst_bar_width, thirst_bar_height)
-        )
+    def draw_status_bar(self, label, value, color, x, y):
+        """Draw a status bar with label."""
+        bar_width = 150
+        bar_height = 20
+        font = pygame.font.Font(None, 24)
 
-        # Placeholder thirst level
-        thirst_level = 1.0
-        pygame.draw.rect(
-            self.screen,
-            BLUE,
-            (
-                thirst_bar_x,
-                thirst_bar_y,
-                int(thirst_bar_width * thirst_level),
-                thirst_bar_height
-            )
-        )
+        pygame.draw.rect(self.screen, GRAY, (x, y, bar_width, bar_height))
+        pygame.draw.rect(self.screen, color, (x, y, int(bar_width * value), bar_height))
+        
+        text = font.render(f"{label}: {int(value * 100)}%", True, BLACK)
+        self.screen.blit(text, (x + bar_width + 10, y))
 
     def draw_game(self):
         """Render the game screen."""
@@ -256,6 +285,7 @@ class Game:
         self.draw_ground()
         self.draw_trees()
         self.draw_berries()
+        self.draw_water_sources()
         self.draw_man()
         self.draw_ui()
 
@@ -282,37 +312,40 @@ class Game:
                 (x + TILE_SIZE // 3, y, TILE_SIZE // 3, TILE_SIZE)
             )
             # Draw leaves
-            pygame.draw.rect(
+            pygame.draw.circle(
                 self.screen,
                 DARK_GREEN,
-                (x, y, TILE_SIZE, TILE_SIZE // 3)
+                (x + TILE_SIZE // 2, y),
+                TILE_SIZE // 2
             )
 
     def draw_berries(self):
         """Draw the berries."""
-        berries_color = RED
-        font = pygame.font.Font(None, 15)
         for berry in self.environment.berries:
-            text = font.render("B", True, berries_color)
-            text_rect = text.get_rect(
-                center=(
-                    berry[0] * TILE_SIZE + TILE_SIZE // 2,
-                    berry[1] * TILE_SIZE + TILE_SIZE // 2
-                )
+            pygame.draw.circle(
+                self.screen,
+                RED,
+                (berry[0] * TILE_SIZE + TILE_SIZE // 2, berry[1] * TILE_SIZE + TILE_SIZE // 2),
+                TILE_SIZE // 4
             )
-            self.screen.blit(text, text_rect)
+
+    def draw_water_sources(self):
+        """Draw the water sources."""
+        for water in self.environment.water_sources:
+            pygame.draw.rect(
+                self.screen,
+                LIGHT_BLUE,
+                (water[0] * TILE_SIZE, water[1] * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+            )
 
     def draw_man(self):
         """Draw the man/player character."""
-        font = pygame.font.Font(None, 15)
-        text = font.render("M", True, BLACK)
-        text_rect = text.get_rect(
-            center=(
-                self.man.x * TILE_SIZE + TILE_SIZE // 2,
-                self.man.y * TILE_SIZE + TILE_SIZE // 2
-            )
+        pygame.draw.circle(
+            self.screen,
+            BLACK,
+            (int(self.man.x * TILE_SIZE + TILE_SIZE // 2), int(self.man.y * TILE_SIZE + TILE_SIZE // 2)),
+            TILE_SIZE // 2
         )
-        self.screen.blit(text, text_rect)
 
     def handle_events(self):
         """Handle events based on the current game state."""
@@ -326,7 +359,10 @@ class Game:
                         self.state = GameState.IN_GAME_MENU
                     elif self.state == GameState.IN_GAME_MENU:
                         self.state = GameState.IN_GAME
-
+                elif event.key == pygame.K_e and self.state == GameState.IN_GAME:
+                    self.man.consume("berries")
+                elif event.key == pygame.K_q and self.state == GameState.IN_GAME:
+                    self.man.consume("water")
 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mouse_pos = event.pos
@@ -355,21 +391,37 @@ class Game:
 
     def update_game(self):
         """Update game logic."""
-        hungry = self.man.is_hungry(self.time)
+        current_time = pygame.time.get_ticks() // 1000
+        hungry = self.man.is_hungry(current_time)
+        thirsty = self.man.is_thirsty(current_time)
 
-        if hungry:
-            food_found = self.environment.find_closest_food(self.man)
+        if hungry and self.man.inventory["berries"] > 0:
+            self.man.consume("berries")
+        elif thirsty and self.man.inventory["water"] > 0:
+            self.man.consume("water")
+        elif hungry:
+            food_found = self.environment.find_closest_resource(self.man, "berries")
             if food_found:
                 self.man.move_to_spot(food_found)
+        elif thirsty:
+            water_found = self.environment.find_closest_resource(self.man, "water_sources")
+            if water_found:
+                self.man.move_to_spot(water_found)
         else:
             self.wander(self.man)
 
-        self.environment.check_step(self.man, self.time)
+        self.environment.check_step(self.man, current_time)
+
+        # Update man's stats
+        self.man.health -= 0.01
+        self.man.thirst -= 0.05
+        if self.man.thirst <= 0:
+            self.man.health -= 0.1
 
         if self.check_death():
             self.state = GameState.DEATH_SCREEN
 
-        self.time += 1
+        self.time = current_time
         self.clock.tick(FPS)
 
     def wander(self, entity):
@@ -379,16 +431,14 @@ class Game:
         new_x = (entity.x + dx) % GRID_SIZE
         new_y = (entity.y + dy) % GRID_SIZE
 
-        if (new_x, new_y) not in self.environment.trees:
+        if (int(new_x), int(new_y)) not in self.environment.trees:
             entity.x = new_x
             entity.y = new_y
+            entity.energy = max(0, entity.energy - 0.1)
 
     def check_death(self):
         """Check if the man has died."""
-        hunger_level = self.man.get_hunger_level(self.time)
-        if hunger_level <= 0:
-            return True
-        return False
+        return self.man.health <= 0
 
     def run(self):
         """Main game loop."""
@@ -404,7 +454,8 @@ class Game:
                 self.menu.upgrade_menu()
 
             elif self.state == GameState.IN_GAME_MENU:
-                self.menu.open_in_game_menu()
+                self.draw_game()
+                self.menu.open_in_game_menu(self.man)
 
             elif self.state == GameState.IN_GAME:
                 self.update_game()
