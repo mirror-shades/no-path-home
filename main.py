@@ -34,10 +34,12 @@ class Man:
         self.last_wet = 0
         self.last_ate = 0
         self.last_drank = 0
-        self.inventory = {"wood": 0, "berries": 0, "water": 0}
+        self.inventory = {"wood": 0, "berries": 0, "water": 0, "stone": 0}
         self.health = 100
         self.thirst = 100
         self.energy = 100
+        self.speed = 1
+        self.crafting_skills = 0
 
     def is_hungry(self, current_time):
         """Check if the man is hungry based on time since last meal."""
@@ -66,14 +68,15 @@ class Man:
         distance = math.sqrt(dx**2 + dy**2)
         
         if distance > 0:
-            self.x += dx / distance
-            self.y += dy / distance
+            self.x += (dx / distance) * self.speed
+            self.y += (dy / distance) * self.speed
 
         self.energy = max(0, self.energy - 0.1)
 
     def collect_resource(self, resource_type):
         """Collect a resource and add it to the inventory."""
         self.inventory[resource_type] += 1
+        self.crafting_skills += 0.1
 
     def consume(self, item_type):
         """Consume an item from the inventory."""
@@ -86,6 +89,16 @@ class Man:
                 self.thirst = min(100, self.thirst + 20)
                 self.last_drank = pygame.time.get_ticks() // 1000
 
+    def craft(self, item_type):
+        """Craft an item using resources."""
+        if item_type == "axe" and self.inventory["wood"] >= 3 and self.inventory["stone"] >= 2:
+            self.inventory["wood"] -= 3
+            self.inventory["stone"] -= 2
+            self.attack += 5
+            self.crafting_skills += 1
+            return True
+        return False
+
 class Environment:
     """Class representing the game environment."""
 
@@ -93,9 +106,11 @@ class Environment:
         self.trees = []
         self.berries = []
         self.water_sources = []
+        self.stones = []
         self.create_tree_array()
         self.create_berry_array()
         self.create_water_sources()
+        self.create_stone_array()
 
     def create_tree_array(self):
         """Initialize tree positions randomly on the grid."""
@@ -118,6 +133,13 @@ class Environment:
                 if (i, j) != (50, 50) and random.random() < 0.001:
                     self.water_sources.append((i, j))
 
+    def create_stone_array(self):
+        """Initialize stone positions randomly on the grid."""
+        for i in range(GRID_SIZE):
+            for j in range(GRID_SIZE):
+                if (i, j) != (50, 50) and random.random() < 0.005:
+                    self.stones.append((i, j))
+
     def find_closest_resource(self, man, resource_type):
         """Find the closest resource of a given type to the man."""
         resources = getattr(self, resource_type)
@@ -139,6 +161,9 @@ class Environment:
             man.collect_resource("water")
         elif man_pos in self.trees:
             man.collect_resource("wood")
+        elif man_pos in self.stones:
+            man.collect_resource("stone")
+            self.stones.remove(man_pos)
 
 class Menu:
     """Class to handle different menus in the game."""
@@ -162,14 +187,19 @@ class Menu:
         pygame.draw.rect(menu_surface, BLACK, menu_surface.get_rect(), 2)
 
         # Display inventory
-        inventory_text = f"Inventory: Wood: {man.inventory['wood']}, Berries: {man.inventory['berries']}, Water: {man.inventory['water']}"
+        inventory_text = f"Inventory: Wood: {man.inventory['wood']}, Berries: {man.inventory['berries']}, Water: {man.inventory['water']}, Stone: {man.inventory['stone']}"
         text_surf = self.font.render(inventory_text, True, BLACK)
         menu_surface.blit(text_surf, (20, 20))
 
         # Display stats
-        stats_text = f"Health: {man.health}, Energy: {int(man.energy)}, Thirst: {int(man.thirst)}"
+        stats_text = f"Health: {man.health}, Energy: {int(man.energy)}, Thirst: {int(man.thirst)}, Attack: {man.attack}"
         text_surf = self.font.render(stats_text, True, BLACK)
         menu_surface.blit(text_surf, (20, 60))
+
+        # Display crafting skills
+        crafting_text = f"Crafting Skills: {int(man.crafting_skills)}"
+        text_surf = self.font.render(crafting_text, True, BLACK)
+        menu_surface.blit(text_surf, (20, 100))
 
         # Blit the menu surface onto the main screen
         self.screen.blit(menu_surface, (menu_x, menu_y))
@@ -286,6 +316,7 @@ class Game:
         self.draw_trees()
         self.draw_berries()
         self.draw_water_sources()
+        self.draw_stones()
         self.draw_man()
         self.draw_ui()
 
@@ -338,6 +369,16 @@ class Game:
                 (water[0] * TILE_SIZE, water[1] * TILE_SIZE, TILE_SIZE, TILE_SIZE)
             )
 
+    def draw_stones(self):
+        """Draw the stones."""
+        for stone in self.environment.stones:
+            pygame.draw.circle(
+                self.screen,
+                GRAY,
+                (stone[0] * TILE_SIZE + TILE_SIZE // 2, stone[1] * TILE_SIZE + TILE_SIZE // 2),
+                TILE_SIZE // 3
+            )
+
     def draw_man(self):
         """Draw the man/player character."""
         pygame.draw.circle(
@@ -363,6 +404,9 @@ class Game:
                     self.man.consume("berries")
                 elif event.key == pygame.K_q and self.state == GameState.IN_GAME:
                     self.man.consume("water")
+                elif event.key == pygame.K_c and self.state == GameState.IN_GAME:
+                    if self.man.craft("axe"):
+                        print("Axe crafted!")
 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mouse_pos = event.pos
